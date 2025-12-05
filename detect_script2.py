@@ -92,9 +92,34 @@ def play_hardware_buzzer(duration=0.5, beeps=3):
 
 # Audio fallback function
 def play_audio_beep():
-    """Play beep using audio - fallback when GPIO not available"""
+    """Play beep using audio - prioritizes buzzer.wav file"""
     system = platform.system()
     
+    # First priority: Play buzzer.wav if it exists
+    if os.path.exists('buzzer.wav'):
+        try:
+            if system == 'Windows':
+                import winsound
+                winsound.PlaySound('buzzer.wav', winsound.SND_FILENAME | winsound.SND_ASYNC)
+                return
+            else:
+                # Linux/Raspberry Pi - try multiple players
+                players = [
+                    ['aplay', 'buzzer.wav'],
+                    ['play', 'buzzer.wav'],
+                    ['mpg123', 'buzzer.wav'],
+                    ['ffplay', '-nodisp', '-autoexit', 'buzzer.wav']
+                ]
+                for player in players:
+                    try:
+                        subprocess.Popen(player, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                        return
+                    except FileNotFoundError:
+                        continue
+        except Exception as e:
+            print(f"Error playing buzzer.wav: {e}")
+    
+    # Fallback options if buzzer.wav doesn't work
     if system == 'Windows':
         try:
             import winsound
@@ -102,7 +127,7 @@ def play_audio_beep():
         except ImportError:
             print("\a")
     else:
-        # Linux/Raspberry Pi
+        # Linux/Raspberry Pi fallbacks
         try:
             # Try using sox (play command)
             subprocess.Popen(['play', '-n', 'synth', '0.2', 'sine', '1000'], 
@@ -110,16 +135,10 @@ def play_audio_beep():
                             stderr=subprocess.DEVNULL)
         except FileNotFoundError:
             try:
-                # Try playing buzzer.wav if it exists
-                if os.path.exists('buzzer.wav'):
-                    subprocess.Popen(['aplay', 'buzzer.wav'], 
-                                   stdout=subprocess.DEVNULL, 
-                                   stderr=subprocess.DEVNULL)
-                else:
-                    # Fallback to beep command
-                    subprocess.Popen(['beep', '-f', '1000', '-l', '200'], 
-                                   stdout=subprocess.DEVNULL, 
-                                   stderr=subprocess.DEVNULL)
+                # Fallback to beep command
+                subprocess.Popen(['beep', '-f', '1000', '-l', '200'], 
+                               stdout=subprocess.DEVNULL, 
+                               stderr=subprocess.DEVNULL)
             except FileNotFoundError:
                 # Last resort - terminal bell
                 print("\a")
