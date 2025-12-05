@@ -9,8 +9,10 @@ import time
 import os
 import csv
 from datetime import datetime
+import platform
 
 # Load YOLO model (downloads yolov8n.pt on first run if not present)
+print("Loading YOLO model...")
 yolo_model = YOLO('yolov8n.pt')
 
 # Load TFLite model
@@ -18,6 +20,7 @@ tflite_path = 'object_identifier_model.tflite'
 if not os.path.exists(tflite_path):
     print(f"Error: {tflite_path} not found.")
     exit()
+print("Loading TFLite model...")
 interpreter = tf.lite.Interpreter(model_path=tflite_path)
 interpreter.allocate_tensors()
 input_details = interpreter.get_input_details()
@@ -38,6 +41,7 @@ dangerous_classes = set()
 for cls_id, name in classes.items():
     if name.endswith('_dang'):
         dangerous_classes.add(cls_id)
+print(f"Loaded {len(classes)} classes, {len(dangerous_classes)} marked as dangerous")
 
 # Potential animal classes from YOLO (COCO names to check for TFLite override)
 potential_animals = {'person', 'bird', 'cat', 'dog', 'horse', 'sheep', 'cow', 'elephant', 'bear', 'zebra', 'giraffe'}
@@ -58,39 +62,59 @@ if not os.path.exists(csv_path):
         writer = csv.writer(f)
         writer.writerow(['Animal', 'Timestamp'])
 
-# Function to play beep on Raspberry Pi/Linux
+# Cross-platform beep function
 def play_beep():
-    """Play beep using system command - works on Raspberry Pi"""
-    try:
-        # Try using sox (play command)
-        subprocess.Popen(['play', '-n', 'synth', '0.2', 'sine', '1000'], 
-                        stdout=subprocess.DEVNULL, 
-                        stderr=subprocess.DEVNULL)
-    except FileNotFoundError:
+    """Play beep - works on both Windows and Linux/Raspberry Pi"""
+    system = platform.system()
+    
+    if system == 'Windows':
         try:
-            # Fallback to system beep
-            subprocess.Popen(['beep', '-f', '1000', '-l', '200'], 
-                           stdout=subprocess.DEVNULL, 
-                           stderr=subprocess.DEVNULL)
+            import winsound
+            winsound.MessageBeep(winsound.MB_ICONEXCLAMATION)
+        except ImportError:
+            print("\a")  # Fallback to terminal bell
+    else:
+        # Linux/Raspberry Pi
+        try:
+            # Try using sox (play command)
+            subprocess.Popen(['play', '-n', 'synth', '0.2', 'sine', '1000'], 
+                            stdout=subprocess.DEVNULL, 
+                            stderr=subprocess.DEVNULL)
         except FileNotFoundError:
-            # If neither works, print to console
-            print("\a")  # Terminal bell
+            try:
+                # Fallback to beep command
+                subprocess.Popen(['beep', '-f', '1000', '-l', '200'], 
+                               stdout=subprocess.DEVNULL, 
+                               stderr=subprocess.DEVNULL)
+            except FileNotFoundError:
+                # Last resort - terminal bell
+                print("\a")
 
-# Open webcam (use 0 for USB camera, or adjust for Pi Camera)
+# Open webcam
+print("Opening webcam...")
 cap = cv2.VideoCapture(0)
 if not cap.isOpened():
     print("Error: Could not open webcam.")
-    print("For Raspberry Pi Camera, you may need to enable legacy camera support")
+    print("Troubleshooting tips:")
+    print("1. Check if camera is connected: ls /dev/video*")
+    print("2. For Pi Camera: sudo raspi-config -> Interface Options -> Legacy Camera")
+    print("3. Try different camera index: VideoCapture(1) or VideoCapture(2)")
     exit()
 
-# Optimize for Raspberry Pi - reduce resolution if needed
+# Optimize for Raspberry Pi - reduce resolution for better performance
 cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 cap.set(cv2.CAP_PROP_FPS, 30)
 
+actual_width = cap.get(cv2.CAP_PROP_FRAME_WIDTH)
+actual_height = cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
+print(f"Camera resolution: {int(actual_width)}x{int(actual_height)}")
 print("Starting detection... Press 'q' to quit")
+print("-" * 50)
 
 frame_count = 0
+detection_count = 0
+
 while True:
     ret, frame = cap.read()
     if not ret:
@@ -100,7 +124,7 @@ while True:
     frame_count += 1
     
     # Detect with YOLO
-    yolo_results = yolo_model(frame)[0]
+    yolo_results = yolo_model(frame, verbose=False)[0]  # verbose=False reduces console spam
     annotated_frame = frame.copy()
 
     detected_dangerous = False
@@ -139,12 +163,13 @@ while True:
                 override_conf = pred_conf
                 if pred_class in dangerous_classes and custom_label.endswith('_dang'):
                     detected_dangerous = True
+                    detection_count += 1
                     # Log to CSV
                     timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                     with open(csv_path, 'a', newline='') as f:
                         writer = csv.writer(f)
                         writer.writerow([custom_label, timestamp])
-                    print(f"⚠️  DANGEROUS: {custom_label} detected at {timestamp}")
+                    print(f"⚠️  ALERT #{detection_count}: {custom_label} detected at {timestamp}")
 
         # Final label and color
         final_label = override_label if override_label else yolo_label
@@ -154,6 +179,10 @@ while True:
         # Draw box and label
         cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, 2)
         cv2.putText(annotated_frame, full_label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+
+    # Add status info to frame
+    status_text = f"Frame: {frame_count} | Alerts: {detection_count}"
+    cv2.putText(annotated_frame, status_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
 
     # Display the frame
     cv2.imshow('Live Detection (YOLO + TFLite)', annotated_frame)
@@ -171,4 +200,9 @@ while True:
 # Cleanup
 cap.release()
 cv2.destroyAllWindows()
-print(f"\nProcessed {frame_count} frames. Detections saved to {csv_path}")
+print("-" * 50)
+print(f"Session Summary:")
+print(f"  Total frames processed: {frame_count}")
+print(f"  Dangerous animals detected: {detection_count}")
+print(f"  Detections saved to: {csv_path}")
+print("Detection stopped.")
